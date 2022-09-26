@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: collector-config
+  namespace: sample
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols: 
+          grpc:
+    processors:
+      batch:
+        send_batch_size: 10000
+        timeout: 5s
+    exporters:
+      prometheus:
+        endpoint: ":9090"
+      logging:
+        loglevel: debug
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [logging]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus, logging]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: sample
+data:
+  agent.yaml: |
+    receivers:
+      otlp:
+        protocols: 
+          grpc:
+    processors:
+    exporters:
+      otlp:
+        endpoint: "opentelemetrycollector.default.svc.cluster.local:4317"
+        insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: []
+          exporters: [otlp]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opentelemetrycollector
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetrycollector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opentelemetrycollector
+    spec:
+      containers:
+      - name: otelcol
+        args:
+        - --config=/conf/collector.yaml
+        image: otel/opentelemetry-collector:0.47.0
+        volumeMounts:
+        - mountPath: /conf
+          name: collector-config
+      volumes:
+      - configMap:
+          items:
+          - key: collector.yaml
+            path: collector.yaml
+          name: collector-config
+        name: collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opentelemetrycollector
+  namespace: sample
+spec:
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: metrics
+    port: 9090
+    protocol: TCP
+    targetPort: 9090
+  selector:
+    app.kubernetes.io/name: opentelemetrycollector
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: myapp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: myapp
+    spec:
+      containers:
+      - name: myapp
+        image: avsostestmonitor.azurecr.io/node-test
+      - name: agent
+        image: otel/opentelemetry-collector:0.18.0
+        args:
+        - --config=/conf/agent.yaml
+        volumeMounts:
+        - mountPath: /conf
+          name: agent-config
+      volumes:
+      - configMap:
+          items:
+          - key: agent.yaml
+            path: agent.yaml
+          name: agent-config
+        name: agent-config
